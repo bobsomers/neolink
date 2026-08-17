@@ -26,6 +26,7 @@ gstreamer = {version = "0.23.0", optional = true}
 gstreamer-app = { version = "0.23.0", features = ["v1_20"], optional = true }
 gstreamer-rtsp = { version = "0.23.0", features = ["v1_20"], optional = true }
 gstreamer-rtsp-server = { version = "0.23.0", features = ["v1_20"], optional = true }
+gstreamer-video = { version = "0.23.0", optional = true }
 heck = "0.5.0"
 log = { version = "0.4.17", features = [ "release_max_level_debug" ] }
 md5 = {version = "0.7.0", optional = true}
@@ -46,6 +47,16 @@ validator = {version="0.18.1", features = ["derive"] }
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.5"
 
+# Syphon frame sharing is macOS only. The objc2 versions here must match the
+# ones syphon-metal itself uses or the objc2 types will not line up.
+[target.'cfg(target_os = "macos")'.dependencies]
+syphon-core = { version = "0.3.0", optional = true }
+syphon-metal = { version = "0.3.0", optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-metal = { version = "0.3", optional = true }
+objc2-io-surface = { version = "0.3", optional = true }
+objc2-core-foundation = { version = "0.3", optional = true }
+
 [features]
 default = ["gstreamer"]
 gstreamer = [
@@ -60,4 +71,16 @@ pushnoti = [
   "dep:fcm-push-listener",
   "dep:dirs",
   "dep:md5"
+]
+# Publish decoded camera video as a macOS Syphon server.
+# Requires gstreamer for the hardware decode pipeline.
+syphon = [
+  "gstreamer",
+  "dep:gstreamer-video",
+  "dep:syphon-core",
+  "dep:syphon-metal",
+  "dep:objc2",
+  "dep:objc2-metal",
+  "dep:objc2-io-surface",
+  "dep:objc2-core-foundation"
 ]

@@ -43,6 +43,35 @@ features not yet in upstream master.
   - Larger message buffers to handle network jitter
   - Backpressure handling to prevent frame drops
   - Improved RTSP session timeout handling
+- Syphon output on macOS (`syphon` subcommand, behind the `syphon` feature)
+- Frame arrival diagnostics (`frame-stats` subcommand)
+
+## Syphon output (macOS)
+
+The `syphon` subcommand decodes the camera stream with VideoToolbox and
+publishes it as a [Syphon](https://syphon.github.io/) server, so Syphon-aware
+applications can read frames directly. This avoids RTSP entirely, which
+removes the latency that the RTSP serving path introduces.
+
+```bash
+cargo build --release --features syphon
+neolink syphon --config=neolink.toml CameraName
+```
+
+The server is advertised under the camera's name unless `--name` is given.
+`Syphon.framework` ships inside the `syphon-core` crate, so there is nothing
+extra to install.
+
+## Diagnosing stream lag
+
+The `frame-stats` subcommand reports frame timing straight off the camera
+connection, with no RTSP server and no GStreamer involved. It compares arrival
+times against the camera's own timestamps, which distinguishes a problem in the
+camera connection from one introduced by the serving layer.
+
+```bash
+neolink frame-stats --config=neolink.toml CameraName
+```
 
 ## Installation
 

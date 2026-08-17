@@ -67,14 +67,21 @@ fn platform_cfg() {
         .and_then(|x| x.into_string().ok())
         .unwrap_or_else(|| r"/usr/local/opt/openssl@1.1".to_string());
 
-    println!(
-        r"cargo:rustc-link-search=native={}/lib;{}/lib",
-        gstreamer_dir, openssl_dir
-    );
-    println!(
-        r"cargo:rustc-link-arg=-Wl,-rpath,{}/lib;{}/lib/",
-        gstreamer_dir, openssl_dir
-    );
+    // These must be emitted one path per line. Joining them with `;` produces a
+    // single nonsense path on macOS, which is why the binary previously had to be
+    // patched by hand with `install_name_tool -add_rpath` after every build
+    println!(r"cargo:rustc-link-search=native={}/lib", gstreamer_dir);
+    println!(r"cargo:rustc-link-search=native={}/lib", openssl_dir);
+    println!(r"cargo:rustc-link-arg=-Wl,-rpath,{}/lib", gstreamer_dir);
+    println!(r"cargo:rustc-link-arg=-Wl,-rpath,{}/lib", openssl_dir);
+
+    // syphon-core ships Syphon.framework inside the crate and reassembles it in
+    // its OUT_DIR, exporting the location via `links = "Syphon"`. Its own rpath
+    // link-arg does not propagate to dependents (only link-search/link-lib do),
+    // so add the rpath here or the binary fails at load with "no LC_RPATH's found".
+    if let Ok(syphon_dir) = env::var("DEP_SYPHON_FRAMEWORK_DIR") {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", syphon_dir);
+    }
 }
 
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]

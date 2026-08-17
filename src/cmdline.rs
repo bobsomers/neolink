@@ -33,4 +33,7 @@ pub enum Command {
     Battery(super::battery::Opt),
     Services(super::services::Opt),
     Users(super::users::Opt),
+    FrameStats(super::framestats::Opt),
+    #[cfg(feature = "syphon")]
+    Syphon(super::syphon::Opt),
 }

@@ -40,6 +40,7 @@ mod battery;
 mod cmdline;
 mod common;
 mod config;
+mod framestats;
 #[cfg(feature = "gstreamer")]
 mod image;
 mod mqtt;
@@ -50,6 +51,8 @@ mod reboot;
 mod rtsp;
 mod services;
 mod statusled;
+#[cfg(feature = "syphon")]
+mod syphon;
 #[cfg(feature = "gstreamer")]
 mod talk;
 mod users;
@@ -158,6 +161,13 @@ async fn main() -> Result<()> {
         }
         Some(Command::Users(opts)) => {
             users::main(opts, neo_reactor.clone()).await?;
+        }
+        Some(Command::FrameStats(opts)) => {
+            framestats::main(opts, neo_reactor.clone()).await?;
+        }
+        #[cfg(feature = "syphon")]
+        Some(Command::Syphon(opts)) => {
+            syphon::main(opts, neo_reactor.clone()).await?;
         }
     }
 
