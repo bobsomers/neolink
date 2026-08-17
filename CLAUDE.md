@@ -90,6 +90,10 @@ cargo test
 ## Feature Flags
 
 - `gstreamer` (default) - RTSP server support
+- `syphon` (default) - Publish decoded video as a macOS Syphon server. Its dependencies
+  are macOS only and the module is additionally gated on `target_os = "macos"`, so
+  non-macOS builds simply omit the subcommand rather than failing
+- `ui` (default) - Loopback-only web UI for adjusting zoom and IR while streaming
 - `pushnoti` (optional) - FCM push notification listener
 
 ## Cross-Compilation

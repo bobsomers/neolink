@@ -37,6 +37,11 @@ GStreamer development libraries are required for the RTSP feature (enabled by de
 ## Feature Flags
 
 - `gstreamer` (default) - Enables RTSP server via GStreamer
+- `syphon` (default) - Publishes decoded video as a macOS Syphon server. Its
+  dependencies are declared macOS-only and the module is also gated on
+  `target_os = "macos"`, so Linux/Jetson builds resolve and compile normally,
+  just without the subcommand
+- `ui` (default) - Loopback-only web UI for zoom and IR control
 - `pushnoti` (optional) - Enables FCM push notification listener
 
 Build with specific features:

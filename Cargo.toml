@@ -13,6 +13,7 @@ members = [
 
 [dependencies]
 anyhow = "1.0.70"
+axum = { version = "0.8", optional = true }
 base64 = "0.22.0"
 byte-slice-cast = {version = "1.2.2", optional = true}
 bytes = "1.6.0"
@@ -26,7 +27,6 @@ gstreamer = {version = "0.23.0", optional = true}
 gstreamer-app = { version = "0.23.0", features = ["v1_20"], optional = true }
 gstreamer-rtsp = { version = "0.23.0", features = ["v1_20"], optional = true }
 gstreamer-rtsp-server = { version = "0.23.0", features = ["v1_20"], optional = true }
-gstreamer-video = { version = "0.23.0", optional = true }
 heck = "0.5.0"
 log = { version = "0.4.17", features = [ "release_max_level_debug" ] }
 md5 = {version = "0.7.0", optional = true}
@@ -50,6 +50,8 @@ tikv-jemallocator = "0.5"
 # Syphon frame sharing is macOS only. The objc2 versions here must match the
 # ones syphon-metal itself uses or the objc2 types will not line up.
 [target.'cfg(target_os = "macos")'.dependencies]
+# Only the syphon module uses this, and that module is macOS only
+gstreamer-video = { version = "0.23.0", optional = true }
 syphon-core = { version = "0.3.0", optional = true }
 syphon-metal = { version = "0.3.0", optional = true }
 objc2 = { version = "0.6", optional = true }
@@ -58,7 +60,7 @@ objc2-io-surface = { version = "0.3", optional = true }
 objc2-core-foundation = { version = "0.3", optional = true }
 
 [features]
-default = ["gstreamer"]
+default = ["gstreamer", "syphon", "ui"]
 gstreamer = [
   "dep:gstreamer",
   "dep:gstreamer-app",
@@ -84,3 +86,5 @@ syphon = [
   "dep:objc2-io-surface",
   "dep:objc2-core-foundation"
 ]
+# Small loopback-only web UI for adjusting the camera while it streams
+ui = ["dep:axum"]

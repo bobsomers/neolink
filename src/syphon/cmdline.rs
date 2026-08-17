@@ -19,6 +19,15 @@ pub struct Opt {
     /// Number of complete messages to buffer from the camera
     #[arg(long, default_value_t = 100)]
     pub buffer: usize,
+    /// Also serve the camera control UI, so zoom and IR can be adjusted while
+    /// the stream is running
+    #[cfg(feature = "ui")]
+    #[arg(long)]
+    pub ui: bool,
+    /// Port to serve the control UI on
+    #[cfg(feature = "ui")]
+    #[arg(long, default_value_t = 8080)]
+    pub ui_port: u16,
 }
 
 /// Which camera stream to pull

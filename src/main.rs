@@ -51,10 +51,14 @@ mod reboot;
 mod rtsp;
 mod services;
 mod statusled;
-#[cfg(feature = "syphon")]
+// Syphon is a macOS framework, so this stays out of the build on other
+// platforms even though the feature is on by default
+#[cfg(all(feature = "syphon", target_os = "macos"))]
 mod syphon;
 #[cfg(feature = "gstreamer")]
 mod talk;
+#[cfg(feature = "ui")]
+mod ui;
 mod users;
 mod utils;
 
@@ -165,9 +169,13 @@ async fn main() -> Result<()> {
         Some(Command::FrameStats(opts)) => {
             framestats::main(opts, neo_reactor.clone()).await?;
         }
-        #[cfg(feature = "syphon")]
+        #[cfg(all(feature = "syphon", target_os = "macos"))]
         Some(Command::Syphon(opts)) => {
             syphon::main(opts, neo_reactor.clone()).await?;
+        }
+        #[cfg(feature = "ui")]
+        Some(Command::Ui(opts)) => {
+            ui::main(opts, neo_reactor.clone()).await?;
         }
     }
 

@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Neolink Camera</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f4f4f5;
+        --panel: #ffffff;
+        --line: #d4d4d8;
+        --text: #18181b;
+        --muted: #71717a;
+        --accent: #2563eb;
+        --bad: #b91c1c;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #18181b;
+          --panel: #27272a;
+          --line: #3f3f46;
+          --text: #f4f4f5;
+          --muted: #a1a1aa;
+          --accent: #60a5fa;
+          --bad: #f87171;
+        }
+      }
+      body {
+        margin: 0;
+        padding: 1.5rem 1rem;
+        background: var(--bg);
+        color: var(--text);
+        font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main {
+        max-width: 32rem;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.1rem;
+        margin: 0 0 1rem;
+      }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 0.6rem;
+        padding: 1rem;
+        margin-bottom: 1rem;
+      }
+      h2 {
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        margin: 0 0 0.75rem;
+      }
+      select,
+      input[type="range"] {
+        width: 100%;
+      }
+      input[type="range"] {
+        accent-color: var(--accent);
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 1rem;
+        margin-top: 0.5rem;
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      .buttons {
+        display: flex;
+        gap: 0.5rem;
+      }
+      button {
+        flex: 1;
+        padding: 0.6rem;
+        font: inherit;
+        color: var(--text);
+        background: transparent;
+        border: 1px solid var(--line);
+        border-radius: 0.4rem;
+        cursor: pointer;
+      }
+      button[aria-pressed="true"] {
+        border-color: var(--accent);
+        color: var(--accent);
+        font-weight: 600;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      #status {
+        min-height: 1.5rem;
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+      #status.error {
+        color: var(--bad);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Neolink Camera</h1>
+
+      <section>
+        <h2>Camera</h2>
+        <select id="camera"></select>
+      </section>
+
+      <section>
+        <h2>Zoom</h2>
+        <input type="range" id="zoom" min="0" max="100" value="0" disabled />
+        <div class="row">
+          <span id="zoom-min">-</span>
+          <span id="zoom-cur">-</span>
+          <span id="zoom-max">-</span>
+        </div>
+      </section>
+
+      <section>
+        <h2>IR illuminator</h2>
+        <div class="buttons">
+          <button data-ir="on">On</button>
+          <button data-ir="off">Off</button>
+          <button data-ir="auto">Auto</button>
+        </div>
+      </section>
+
+      <div id="status"></div>
+    </main>
+
+    <script>
+      const cameraSelect = document.getElementById("camera");
+      const zoom = document.getElementById("zoom");
+      const zoomMin = document.getElementById("zoom-min");
+      const zoomMax = document.getElementById("zoom-max");
+      const zoomCur = document.getElementById("zoom-cur");
+      const irButtons = [...document.querySelectorAll("[data-ir]")];
+      const status = document.getElementById("status");
+
+      // Set while the user is dragging or a request is in flight, so polling
+      // does not yank the slider out from under them
+      let holding = false;
+
+      function say(message, isError) {
+        status.textContent = message;
+        status.classList.toggle("error", Boolean(isError));
+      }
+
+      async function api(path, options) {
+        const response = await fetch(path, options);
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(body.error || response.statusText);
+        }
+        return body;
+      }
+
+      async function refresh() {
+        const camera = cameraSelect.value;
+        if (!camera || holding) return;
+        try {
+          const state = await api(
+            `/api/state?camera=${encodeURIComponent(camera)}`,
+          );
+          zoom.min = state.zoom.min;
+          zoom.max = state.zoom.max;
+          zoom.value = state.zoom.cur;
+          zoom.disabled = false;
+          zoomMin.textContent = state.zoom.min;
+          zoomMax.textContent = state.zoom.max;
+          zoomCur.textContent = state.zoom.cur;
+          // The camera reports IR as auto/open/close
+          const ir = { open: "on", close: "off", auto: "auto" }[state.ir];
+          irButtons.forEach((button) =>
+            button.setAttribute(
+              "aria-pressed",
+              String(button.dataset.ir === ir),
+            ),
+          );
+          say("");
+        } catch (error) {
+          say(error.message, true);
+        }
+      }
+
+      // Only send on release. Every set is a camera round trip, so reacting to
+      // each pixel of a drag would flood it
+      zoom.addEventListener("input", () => {
+        holding = true;
+        zoomCur.textContent = zoom.value;
+      });
+
+      zoom.addEventListener("change", async () => {
+        try {
+          say("Zooming...");
+          await api("/api/zoom", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              camera: cameraSelect.value,
+              pos: Number(zoom.value),
+            }),
+          });
+          say("");
+        } catch (error) {
+          say(error.message, true);
+        } finally {
+          holding = false;
+          refresh();
+        }
+      });
+
+      irButtons.forEach((button) => {
+        button.addEventListener("click", async () => {
+          try {
+            say("Setting IR...");
+            await api("/api/ir", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                camera: cameraSelect.value,
+                state: button.dataset.ir,
+              }),
+            });
+            say("");
+          } catch (error) {
+            say(error.message, true);
+          } finally {
+            refresh();
+          }
+        });
+      });
+
+      cameraSelect.addEventListener("change", refresh);
+
+      (async function start() {
+        try {
+          const cameras = await api("/api/cameras");
+          cameraSelect.replaceChildren(
+            ...cameras.map((name) => new Option(name, name)),
+          );
+          await refresh();
+          // Pick up changes made elsewhere, such as the Reolink app
+          setInterval(refresh, 3000);
+        } catch (error) {
+          say(error.message, true);
+        }
+      })();
+    </script>
+  </body>
+</html>

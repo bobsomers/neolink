@@ -46,6 +46,22 @@ const LOG_EVERY: Duration = Duration::from_secs(10);
 ///
 /// Opt is the command line options
 pub(crate) async fn main(opt: Opt, reactor: NeoReactor) -> Result<()> {
+    // With --ui the control page runs beside the stream in the one process,
+    // the same way the mqtt-rtsp subcommand runs two services together
+    #[cfg(feature = "ui")]
+    if opt.ui {
+        let (ui_port, ui_reactor) = (opt.ui_port, reactor.clone());
+        return tokio::select! {
+            v = publish(opt, reactor) => v,
+            v = crate::ui::serve(ui_port, ui_reactor) => v,
+        };
+    }
+
+    publish(opt, reactor).await
+}
+
+/// Decode the camera stream and publish it over Syphon
+async fn publish(opt: Opt, reactor: NeoReactor) -> Result<()> {
     let camera = reactor.get(&opt.camera).await?;
     let stream: StreamKind = opt.stream.into();
     let server_name = opt.name.clone().unwrap_or_else(|| opt.camera.clone());

@@ -54,13 +54,32 @@ applications can read frames directly. This avoids RTSP entirely, which
 removes the latency that the RTSP serving path introduces.
 
 ```bash
-cargo build --release --features syphon
+cargo build --release
 neolink syphon --config=neolink.toml CameraName
 ```
 
 The server is advertised under the camera's name unless `--name` is given.
 `Syphon.framework` ships inside the `syphon-core` crate, so there is nothing
 extra to install.
+
+## Camera control UI (`ui` feature)
+
+A small web page for adjusting zoom and the IR illuminator while the camera is
+streaming, without needing an MQTT broker. It calls the same `BcCamera` methods
+the MQTT handlers do.
+
+```bash
+cargo build --release
+neolink ui --config=neolink.toml               # controls only
+neolink syphon --ui --config=neolink.toml CameraName   # video and controls together
+```
+
+Then open <http://127.0.0.1:8080>. The zoom slider uses the camera's own
+position units, which it reports along with its real minimum and maximum.
+
+The server **binds to localhost only** and has no authentication, so the
+controls are not reachable from the network. Exposing it more widely would mean
+changing the bind address and adding auth.
 
 ## Diagnosing stream lag
 

@@ -34,6 +34,8 @@ pub enum Command {
     Services(super::services::Opt),
     Users(super::users::Opt),
     FrameStats(super::framestats::Opt),
-    #[cfg(feature = "syphon")]
+    #[cfg(all(feature = "syphon", target_os = "macos"))]
     Syphon(super::syphon::Opt),
+    #[cfg(feature = "ui")]
+    Ui(super::ui::Opt),
 }
