@@ -64,9 +64,12 @@ extra to install.
 
 ## Camera control UI (`ui` feature)
 
-A small web page for adjusting zoom and the IR illuminator while the camera is
-streaming, without needing an MQTT broker. It calls the same `BcCamera` methods
-the MQTT handlers do.
+A small web page for adjusting the camera while it is streaming, without needing
+an MQTT broker. It calls the same `BcCamera` methods the MQTT handlers do.
+
+Controls: zoom, IR illuminator, floodlight, status LED, and a snapshot preview
+for framing the shot. The floodlight has no state read-back, because the camera
+only pushes floodlight status as it changes rather than answering a query.
 
 ```bash
 cargo build --release

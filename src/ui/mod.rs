@@ -23,7 +23,7 @@
 use anyhow::{Context, Result};
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
@@ -41,6 +41,11 @@ pub(crate) use cmdline::Opt;
 /// The page itself. Kept as a real file but compiled in so the binary stays
 /// self contained
 const INDEX: &str = include_str!("index.html");
+
+/// How many seconds the camera keeps the floodlight on for before turning it
+/// off by itself. The unit is documented in `dissector/messages.md` under
+/// message 288, and 180 is what the MQTT handler passes
+const FLOODLIGHT_DURATION: u16 = 180;
 
 /// Entry point for the ui subcommand
 ///
@@ -60,6 +65,9 @@ pub(crate) async fn serve(port: u16, reactor: NeoReactor) -> Result<()> {
         .route("/api/state", get(state))
         .route("/api/zoom", post(set_zoom))
         .route("/api/ir", post(set_ir))
+        .route("/api/floodlight", post(set_floodlight))
+        .route("/api/statuslight", post(set_statuslight))
+        .route("/api/snapshot", get(snapshot))
         .with_state(reactor);
 
     // Localhost only. These controls have no authentication, so binding any
@@ -121,11 +129,12 @@ async fn cameras(State(reactor): State<NeoReactor>) -> Result<Json<Vec<String>>,
     Ok(Json(names))
 }
 
-/// Current zoom bounds and IR state
+/// Current zoom bounds, IR state and status light state
 #[derive(Serialize)]
 struct CameraState {
     zoom: ZoomState,
     ir: String,
+    status_light: String,
 }
 
 #[derive(Serialize)]
@@ -144,10 +153,10 @@ async fn state(
     let zoom = camera
         .run_task(|cam| Box::pin(async move { Ok(cam.get_zoom().await?) }))
         .await?;
-    // `state` is the IR illuminator. `light_state` is the blue status LED, which
-    // is a different control
-    let ir = camera
-        .run_task(|cam| Box::pin(async move { Ok(cam.get_ledstate().await?.state) }))
+    // One call covers both lights: `state` is the IR illuminator and
+    // `light_state` is the blue status LED
+    let leds = camera
+        .run_task(|cam| Box::pin(async move { Ok(cam.get_ledstate().await?) }))
         .await?;
 
     Ok(Json(CameraState {
@@ -156,7 +165,8 @@ async fn state(
             max: zoom.zoom.max_pos,
             cur: zoom.zoom.cur_pos,
         },
-        ir,
+        ir: leds.state,
+        status_light: leds.light_state,
     }))
 }
 
@@ -242,4 +252,80 @@ async fn set_ir(
         .await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Turning a light on or off
+#[derive(Deserialize)]
+struct LightRequest {
+    camera: String,
+    on: bool,
+}
+
+/// Turning the floodlight on or off, optionally overriding how long for
+#[derive(Deserialize)]
+struct FloodlightRequest {
+    camera: String,
+    on: bool,
+    #[serde(default)]
+    duration: Option<u16>,
+}
+
+async fn set_floodlight(
+    State(reactor): State<NeoReactor>,
+    Json(request): Json<FloodlightRequest>,
+) -> Result<Json<serde_json::Value>, UiError> {
+    let camera = reactor.get(&request.camera).await?;
+    let on = request.on;
+    let duration = request.duration.unwrap_or(FLOODLIGHT_DURATION);
+
+    camera
+        .run_task(move |cam| {
+            Box::pin(async move {
+                cam.set_floodlight_manual(on, duration).await?;
+                AnyResult::Ok(())
+            })
+        })
+        .await?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn set_statuslight(
+    State(reactor): State<NeoReactor>,
+    Json(request): Json<LightRequest>,
+) -> Result<Json<serde_json::Value>, UiError> {
+    let camera = reactor.get(&request.camera).await?;
+    let on = request.on;
+
+    camera
+        .run_task(move |cam| {
+            Box::pin(async move {
+                cam.led_light_set(on).await?;
+                AnyResult::Ok(())
+            })
+        })
+        .await?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn snapshot(
+    State(reactor): State<NeoReactor>,
+    Query(query): Query<CameraQuery>,
+) -> Result<impl IntoResponse, UiError> {
+    let camera = reactor.get(&query.camera).await?;
+
+    // Not every camera answers the snap command. Those that do not will surface
+    // the error rather than hanging
+    let jpeg = camera
+        .run_task(|cam| Box::pin(async move { Ok(cam.get_snapshot().await?) }))
+        .await?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/jpeg"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        jpeg,
+    ))
 }

@@ -94,6 +94,18 @@
         opacity: 0.5;
         cursor: default;
       }
+      .note {
+        margin: 0.75rem 0 0;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      #preview {
+        display: block;
+        width: 100%;
+        border-radius: 0.4rem;
+        margin-bottom: 0.75rem;
+        background: var(--bg);
+      }
       #status {
         min-height: 1.5rem;
         font-size: 0.85rem;
@@ -132,6 +144,34 @@
         </div>
       </section>
 
+      <section>
+        <h2>Floodlight</h2>
+        <div class="buttons">
+          <button data-floodlight="on">On</button>
+          <button data-floodlight="off">Off</button>
+        </div>
+        <p class="note">
+          The camera only reports floodlight changes as they happen, so the
+          current state cannot be read back here.
+        </p>
+      </section>
+
+      <section>
+        <h2>Status LED</h2>
+        <div class="buttons">
+          <button data-statuslight="on">On</button>
+          <button data-statuslight="off">Off</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Preview</h2>
+        <img id="preview" alt="" hidden />
+        <div class="buttons">
+          <button id="refresh">Refresh preview</button>
+        </div>
+      </section>
+
       <div id="status"></div>
     </main>
 
@@ -142,7 +182,18 @@
       const zoomMax = document.getElementById("zoom-max");
       const zoomCur = document.getElementById("zoom-cur");
       const irButtons = [...document.querySelectorAll("[data-ir]")];
+      const floodlightButtons = [
+        ...document.querySelectorAll("[data-floodlight]"),
+      ];
+      const statuslightButtons = [
+        ...document.querySelectorAll("[data-statuslight]"),
+      ];
+      const preview = document.getElementById("preview");
+      const refreshButton = document.getElementById("refresh");
       const status = document.getElementById("status");
+
+      // Object URL of the currently shown preview, revoked when replaced
+      let previewUrl = null;
 
       // Set while the user is dragging or a request is in flight, so polling
       // does not yank the slider out from under them
@@ -162,7 +213,7 @@
         return body;
       }
 
-      async function refresh() {
+      async function refreshState() {
         const camera = cameraSelect.value;
         if (!camera || holding) return;
         try {
@@ -182,6 +233,13 @@
             button.setAttribute(
               "aria-pressed",
               String(button.dataset.ir === ir),
+            ),
+          );
+          const statusLight = state.status_light === "open" ? "on" : "off";
+          statuslightButtons.forEach((button) =>
+            button.setAttribute(
+              "aria-pressed",
+              String(button.dataset.statuslight === statusLight),
             ),
           );
           say("");
@@ -209,13 +267,72 @@
             }),
           });
           say("");
+          loadPreview();
         } catch (error) {
           say(error.message, true);
         } finally {
           holding = false;
-          refresh();
+          refreshState();
         }
       });
+
+      // Each snapshot is a camera round trip, so this only ever happens on
+      // demand or right after a change, never on a timer
+      async function loadPreview() {
+        const camera = cameraSelect.value;
+        if (!camera) return;
+        try {
+          const response = await fetch(
+            `/api/snapshot?camera=${encodeURIComponent(camera)}`,
+          );
+          if (!response.ok) {
+            const body = await response.json().catch(() => ({}));
+            throw new Error(body.error || response.statusText);
+          }
+          const url = URL.createObjectURL(await response.blob());
+          if (previewUrl) URL.revokeObjectURL(previewUrl);
+          previewUrl = url;
+          preview.src = url;
+          preview.hidden = false;
+        } catch (error) {
+          say(error.message, true);
+        }
+      }
+
+      // Wire a pair of on/off buttons to an endpoint that takes { camera, on }
+      function wireLight(buttons, path, label, key) {
+        buttons.forEach((button) => {
+          button.addEventListener("click", async () => {
+            try {
+              say(`Setting ${label}...`);
+              await api(path, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  camera: cameraSelect.value,
+                  on: button.dataset[key] === "on",
+                }),
+              });
+              say("");
+              loadPreview();
+            } catch (error) {
+              say(error.message, true);
+            } finally {
+              refreshState();
+            }
+          });
+        });
+      }
+
+      wireLight(floodlightButtons, "/api/floodlight", "floodlight", "floodlight");
+      wireLight(
+        statuslightButtons,
+        "/api/statuslight",
+        "status LED",
+        "statuslight",
+      );
+
+      refreshButton.addEventListener("click", loadPreview);
 
       irButtons.forEach((button) => {
         button.addEventListener("click", async () => {
@@ -230,15 +347,16 @@
               }),
             });
             say("");
+            loadPreview();
           } catch (error) {
             say(error.message, true);
           } finally {
-            refresh();
+            refreshState();
           }
         });
       });
 
-      cameraSelect.addEventListener("change", refresh);
+      cameraSelect.addEventListener("change", refreshState);
 
       (async function start() {
         try {
@@ -246,9 +364,9 @@
           cameraSelect.replaceChildren(
             ...cameras.map((name) => new Option(name, name)),
           );
-          await refresh();
+          await refreshState();
           // Pick up changes made elsewhere, such as the Reolink app
-          setInterval(refresh, 3000);
+          setInterval(refreshState, 3000);
         } catch (error) {
           say(error.message, true);
         }
