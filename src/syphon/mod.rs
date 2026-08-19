@@ -28,6 +28,8 @@ use neolink_core::{
     bc_protocol::StreamKind,
     bcmedia::model::{BcMedia, BcMediaIframe, BcMediaPframe},
 };
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::channel;
 
@@ -36,6 +38,7 @@ mod gst;
 mod publisher;
 
 use crate::common::NeoReactor;
+use crate::crop::{self, CropHandle, CropShared};
 pub(crate) use cmdline::Opt;
 use publisher::Publisher;
 
@@ -45,23 +48,32 @@ const LOG_EVERY: Duration = Duration::from_secs(10);
 /// Entry point for the syphon subcommand
 ///
 /// Opt is the command line options
-pub(crate) async fn main(opt: Opt, reactor: NeoReactor) -> Result<()> {
+pub(crate) async fn main(opt: Opt, reactor: NeoReactor, config: &Path) -> Result<()> {
+    let state_file = crop::state_path(config);
+    let shared: CropHandle = Arc::new(Mutex::new(CropShared {
+        crop: crop::load(&state_file, &opt.camera),
+        source: None,
+        camera: opt.camera.clone(),
+        state_file,
+    }));
+
     // With --ui the control page runs beside the stream in the one process,
     // the same way the mqtt-rtsp subcommand runs two services together
     #[cfg(feature = "ui")]
     if opt.ui {
         let (ui_port, ui_reactor) = (opt.ui_port, reactor.clone());
+        let ui_shared = shared.clone();
         return tokio::select! {
-            v = publish(opt, reactor) => v,
-            v = crate::ui::serve(ui_port, ui_reactor) => v,
+            v = publish(opt, reactor, shared) => v,
+            v = crate::ui::serve(ui_port, ui_reactor, Some(ui_shared)) => v,
         };
     }
 
-    publish(opt, reactor).await
+    publish(opt, reactor, shared).await
 }
 
 /// Decode the camera stream and publish it over Syphon
-async fn publish(opt: Opt, reactor: NeoReactor) -> Result<()> {
+async fn publish(opt: Opt, reactor: NeoReactor, shared: CropHandle) -> Result<()> {
     let camera = reactor.get(&opt.camera).await?;
     let stream: StreamKind = opt.stream.into();
     let server_name = opt.name.clone().unwrap_or_else(|| opt.camera.clone());
@@ -116,7 +128,7 @@ async fn publish(opt: Opt, reactor: NeoReactor) -> Result<()> {
     let thread_name = format!("{name}::syphon");
     let publisher_thread = std::thread::Builder::new()
         .name(thread_name)
-        .spawn(move || publish_loop(sink, server_name))?;
+        .spawn(move || publish_loop(sink, server_name, shared))?;
 
     gst::push_frame(&pipeline.source, &first_frame)?;
     while let Some((_, data)) = rx.recv().await {
@@ -144,7 +156,7 @@ async fn publish(opt: Opt, reactor: NeoReactor) -> Result<()> {
 /// Pull decoded frames and publish each one
 ///
 /// Runs until the pipeline finishes.
-fn publish_loop(sink: AppSink, server_name: String) -> Result<()> {
+fn publish_loop(sink: AppSink, server_name: String, shared: CropHandle) -> Result<()> {
     let mut publisher: Option<Publisher> = None;
     let mut published: u64 = 0;
     let mut since_log: u64 = 0;
@@ -159,7 +171,7 @@ fn publish_loop(sink: AppSink, server_name: String) -> Result<()> {
             }
         };
 
-        match publish_sample(&sample, &mut publisher, &server_name) {
+        match publish_sample(&sample, &mut publisher, &server_name, &shared) {
             Ok(()) => {
                 published += 1;
                 since_log += 1;
@@ -190,6 +202,7 @@ fn publish_sample(
     sample: &gstreamer::Sample,
     publisher: &mut Option<Publisher>,
     server_name: &str,
+    shared: &CropHandle,
 ) -> Result<()> {
     let caps = sample
         .caps()
@@ -205,23 +218,41 @@ fn publish_sample(
     // may carry a video meta that overrides what the caps advertise
     let (width, height) = (frame.width(), frame.height());
 
-    // The server is sized to the video, which is only known once the first
-    // frame has been decoded. Rebuild it if the camera changes resolution
+    // Only the part of the frame worth publishing. A bad crop must not take the
+    // stream down with it, so fall back to the whole frame and say why
+    let requested = {
+        let mut shared = shared
+            .lock()
+            .map_err(|_| anyhow!("The crop was left locked by a panic"))?;
+        shared.source = Some((width, height));
+        shared.crop
+    };
+    let (crop_x, crop_y, crop_width, crop_height) = match requested.region(width, height) {
+        Ok(region) => region,
+        Err(e) => {
+            log::warn!("Ignoring the crop: {e:#}");
+            (0, 0, width, height)
+        }
+    };
+
+    // The server is sized to what is published, which is only known once the
+    // first frame has been decoded. Rebuild it if the camera changes resolution,
+    // or if the crop has been changed from the web UI
     let needs_rebuild = match publisher.as_ref() {
-        Some(p) => p.dimensions() != (width, height),
+        Some(p) => p.dimensions() != (crop_width, crop_height),
         None => true,
     };
     if needs_rebuild {
         if publisher.is_some() {
             log::info!(
-                "Video size changed to {}x{}, restarting server",
-                width,
-                height
+                "Published size changed to {}x{}, restarting server",
+                crop_width,
+                crop_height
             );
         }
         // Drop the old one first so its server stops before the new one starts
         *publisher = None;
-        *publisher = Some(Publisher::new(server_name, width, height)?);
+        *publisher = Some(Publisher::new(server_name, crop_width, crop_height)?);
     }
 
     let publisher = publisher
@@ -233,5 +264,5 @@ fn publish_sample(
         .plane_data(0)
         .map_err(|e| anyhow!("Could not read the decoded frame: {e:?}"))?;
 
-    publisher.publish(data, stride)
+    publisher.publish(data, stride, crop::byte_offset(crop_x, crop_y, stride))
 }

@@ -110,7 +110,18 @@ impl Publisher {
     ///
     /// `src_stride` is the number of bytes per row in `src`, which is not
     /// necessarily `width * 4`.
-    pub(super) fn publish(&mut self, src: &[u8], src_stride: usize) -> Result<()> {
+    ///
+    /// `src_offset` is where in `src` the top left of the published region sits.
+    /// It is how cropping is done: the publisher is built to the size of the
+    /// region rather than the frame, and this skips the rows and columns in
+    /// front of it. Copying the frame row by row is already necessary because of
+    /// IOSurface's row padding, so a crop costs nothing extra.
+    pub(super) fn publish(
+        &mut self,
+        src: &[u8],
+        src_stride: usize,
+        src_offset: usize,
+    ) -> Result<()> {
         let height = self.height as usize;
         let row_bytes = self.width as usize * 4;
 
@@ -121,12 +132,13 @@ impl Publisher {
                 self.width
             ));
         }
-        if src.len() < (height - 1) * src_stride + row_bytes {
+        if src.len() < src_offset + (height - 1) * src_stride + row_bytes {
             return Err(anyhow!(
-                "Frame is {} bytes, too small for {}x{}",
+                "Frame is {} bytes, too small for {}x{} at offset {}",
                 src.len(),
                 self.width,
-                self.height
+                self.height,
+                src_offset
             ));
         }
 
@@ -158,7 +170,7 @@ impl Publisher {
                 // is top down, so write the rows in reverse. This costs nothing
                 // since the frame is being copied anyway, and it saves having to
                 // flip on the GPU or patch the binding
-                let src_row = src.as_ptr().add(row * src_stride);
+                let src_row = src.as_ptr().add(src_offset + row * src_stride);
                 let dst_row = base.add((height - 1 - row) * dst_stride);
                 std::ptr::copy_nonoverlapping(src_row, dst_row, row_bytes);
             }

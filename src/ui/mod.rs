@@ -22,7 +22,7 @@
 ///
 use anyhow::{Context, Result};
 use axum::{
-    extract::{Query, State},
+    extract::{FromRef, Query, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse},
     routing::{get, post},
@@ -35,8 +35,32 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod cmdline;
 
 use crate::common::NeoReactor;
+use crate::crop::{self, Crop, CropHandle};
 use crate::AnyResult;
 pub(crate) use cmdline::Opt;
+
+/// What the handlers share
+///
+/// The crop is optional because `neolink ui` on its own has no stream to crop.
+/// `FromRef` lets each handler ask for just the part it needs, so the camera
+/// handlers carry on taking a `NeoReactor` and know nothing about cropping.
+#[derive(Clone)]
+struct UiState {
+    reactor: NeoReactor,
+    crop: Option<CropHandle>,
+}
+
+impl FromRef<UiState> for NeoReactor {
+    fn from_ref(state: &UiState) -> Self {
+        state.reactor.clone()
+    }
+}
+
+impl FromRef<UiState> for Option<CropHandle> {
+    fn from_ref(state: &UiState) -> Self {
+        state.crop.clone()
+    }
+}
 
 /// The page itself. Kept as a real file but compiled in so the binary stays
 /// self contained
@@ -51,14 +75,15 @@ const FLOODLIGHT_DURATION: u16 = 180;
 ///
 /// Opt is the command line options
 pub(crate) async fn main(opt: Opt, reactor: NeoReactor) -> Result<()> {
-    serve(opt.port, reactor).await
+    // On its own there is no stream to crop, so the page hides that section
+    serve(opt.port, reactor, None).await
 }
 
 /// Serve the UI until the process is stopped
 ///
 /// The syphon subcommand also calls this so that video and controls can run in
 /// one process.
-pub(crate) async fn serve(port: u16, reactor: NeoReactor) -> Result<()> {
+pub(crate) async fn serve(port: u16, reactor: NeoReactor, crop: Option<CropHandle>) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/api/cameras", get(cameras))
@@ -68,7 +93,8 @@ pub(crate) async fn serve(port: u16, reactor: NeoReactor) -> Result<()> {
         .route("/api/floodlight", post(set_floodlight))
         .route("/api/statuslight", post(set_statuslight))
         .route("/api/snapshot", get(snapshot))
-        .with_state(reactor);
+        .route("/api/crop", get(get_crop).post(set_crop))
+        .with_state(UiState { reactor, crop });
 
     // Localhost only. These controls have no authentication, so binding any
     // other interface would hand camera control to the whole network
@@ -306,6 +332,80 @@ async fn set_statuslight(
         })
         .await?;
 
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// What the page needs to draw and apply a crop
+#[derive(Serialize)]
+struct CropState {
+    /// False when there is no Syphon stream to crop, so the page hides it all
+    supported: bool,
+    /// The camera being published, which is not necessarily the one on screen
+    camera: Option<String>,
+    crop: Crop,
+    /// The full frame size, so the page can show what a crop comes to in pixels
+    source_width: Option<u32>,
+    source_height: Option<u32>,
+}
+
+async fn get_crop(State(handle): State<Option<CropHandle>>) -> Result<Json<CropState>, UiError> {
+    let Some(handle) = handle else {
+        return Ok(Json(CropState {
+            supported: false,
+            camera: None,
+            crop: Crop::default(),
+            source_width: None,
+            source_height: None,
+        }));
+    };
+
+    let shared = handle
+        .lock()
+        .map_err(|_| anyhow::anyhow!("The crop was left locked by a panic"))?;
+    let (source_width, source_height) = match shared.source {
+        Some((width, height)) => (Some(width), Some(height)),
+        None => (None, None),
+    };
+    Ok(Json(CropState {
+        supported: true,
+        camera: Some(shared.camera.clone()),
+        crop: shared.crop,
+        source_width,
+        source_height,
+    }))
+}
+
+async fn set_crop(
+    State(handle): State<Option<CropHandle>>,
+    Json(request): Json<Crop>,
+) -> Result<Json<serde_json::Value>, UiError> {
+    let handle = handle.ok_or_else(|| {
+        anyhow::anyhow!("There is no Syphon stream to crop. Run `neolink syphon --ui`")
+    })?;
+
+    let mut shared = handle
+        .lock()
+        .map_err(|_| anyhow::anyhow!("The crop was left locked by a panic"))?;
+
+    // Check it against the real frame if one has arrived, so a crop that would
+    // leave nothing is refused here rather than being quietly ignored later
+    match shared.source {
+        Some((width, height)) => {
+            request.region(width, height)?;
+        }
+        None => request.validate()?,
+    }
+
+    shared.crop = request;
+    // The stream matters more than remembering the crop, so a failure to save is
+    // reported without undoing the change
+    if let Err(e) = crop::save(&shared.state_file, &shared.camera, request) {
+        log::warn!("Could not save the crop: {e:#}");
+        return Ok(Json(serde_json::json!({
+            "ok": true,
+            "warning": format!("Applied, but not saved for next time: {e:#}"),
+        })));
+    }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

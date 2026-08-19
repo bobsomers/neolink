@@ -99,12 +99,48 @@
         font-size: 0.8rem;
         color: var(--muted);
       }
+      .preview-wrap {
+        position: relative;
+        line-height: 0;
+        margin-bottom: 0.75rem;
+      }
       #preview {
         display: block;
         width: 100%;
         border-radius: 0.4rem;
-        margin-bottom: 0.75rem;
         background: var(--bg);
+      }
+      /* The guides are placed as percentages of the wrapper, which is exactly
+         as wide as the image, so they stay put however the page is resized */
+      .guide {
+        position: absolute;
+        background: #ef4444;
+        display: none;
+      }
+      .preview-wrap.cropping .guide {
+        display: block;
+      }
+      .guide.vertical {
+        top: 0;
+        bottom: 0;
+        width: 2px;
+      }
+      .guide.horizontal {
+        left: 0;
+        right: 0;
+        height: 2px;
+      }
+      .crop-grid {
+        display: grid;
+        grid-template-columns: 3.5rem 1fr 3rem;
+        align-items: center;
+        gap: 0.35rem 0.6rem;
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+      .crop-grid output {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
       }
       #status {
         min-height: 1.5rem;
@@ -166,10 +202,46 @@
 
       <section>
         <h2>Preview</h2>
-        <img id="preview" alt="" hidden />
+        <div class="preview-wrap" id="preview-wrap">
+          <img id="preview" alt="" hidden />
+          <div class="guide vertical" id="guide-left"></div>
+          <div class="guide vertical" id="guide-right"></div>
+          <div class="guide horizontal" id="guide-top"></div>
+          <div class="guide horizontal" id="guide-bottom"></div>
+        </div>
         <div class="buttons">
           <button id="refresh">Refresh preview</button>
         </div>
+      </section>
+
+      <section id="crop-section" hidden>
+        <h2>Crop</h2>
+        <div class="crop-grid">
+          <label for="crop-left">Left</label>
+          <input type="range" id="crop-left" min="0" max="80" value="0" />
+          <output id="crop-left-value">0%</output>
+          <label for="crop-right">Right</label>
+          <input type="range" id="crop-right" min="0" max="80" value="0" />
+          <output id="crop-right-value">0%</output>
+          <label for="crop-top">Top</label>
+          <input type="range" id="crop-top" min="0" max="80" value="0" />
+          <output id="crop-top-value">0%</output>
+          <label for="crop-bottom">Bottom</label>
+          <input type="range" id="crop-bottom" min="0" max="80" value="0" />
+          <output id="crop-bottom-value">0%</output>
+        </div>
+        <div class="row">
+          <span id="crop-size">-</span>
+          <span id="crop-camera"></span>
+        </div>
+        <div class="buttons">
+          <button id="crop-apply">Apply crop</button>
+          <button id="crop-reset">Reset</button>
+        </div>
+        <p class="note">
+          The guides move as you drag. Nothing reaches the camera until you press
+          Apply, which restarts the video stream at the new size.
+        </p>
       </section>
 
       <div id="status"></div>
@@ -189,8 +261,28 @@
         ...document.querySelectorAll("[data-statuslight]"),
       ];
       const preview = document.getElementById("preview");
+      const previewWrap = document.getElementById("preview-wrap");
       const refreshButton = document.getElementById("refresh");
       const status = document.getElementById("status");
+
+      const cropSection = document.getElementById("crop-section");
+      const cropSizeLabel = document.getElementById("crop-size");
+      const cropCameraLabel = document.getElementById("crop-camera");
+      const cropApply = document.getElementById("crop-apply");
+      const cropReset = document.getElementById("crop-reset");
+      const SIDES = ["left", "right", "top", "bottom"];
+      const cropSliders = {};
+      const cropOutputs = {};
+      const cropGuides = {};
+      for (const side of SIDES) {
+        cropSliders[side] = document.getElementById(`crop-${side}`);
+        cropOutputs[side] = document.getElementById(`crop-${side}-value`);
+        cropGuides[side] = document.getElementById(`guide-${side}`);
+      }
+
+      // How big the stream's frames are before cropping, reported by
+      // /api/crop. Null until a frame has been through the publisher
+      let cropSource = null;
 
       // Object URL of the currently shown preview, revoked when replaced
       let previewUrl = null;
@@ -299,6 +391,90 @@
         }
       }
 
+      // Everything below happens in the page. Dragging a slider costs no camera
+      // traffic and nothing is published until Apply is pressed, because
+      // changing the published size restarts the video stream
+      function cropFractions() {
+        const values = {};
+        for (const side of SIDES) {
+          values[side] = Number(cropSliders[side].value) / 100;
+        }
+        return values;
+      }
+
+      function drawGuides() {
+        for (const side of SIDES) {
+          // Straight off the slider, so the percentage is a whole number rather
+          // than whatever dividing by 100 and back leaves behind
+          const percent = Number(cropSliders[side].value);
+          cropGuides[side].style[side] = `${percent}%`;
+          cropOutputs[side].textContent = `${percent}%`;
+        }
+        previewWrap.classList.add("cropping");
+
+        if (!cropSource) {
+          cropSizeLabel.textContent = "";
+          return;
+        }
+        const crop = cropFractions();
+        const width = Math.round(cropSource.width * (1 - crop.left - crop.right));
+        const height = Math.round(cropSource.height * (1 - crop.top - crop.bottom));
+        cropSizeLabel.textContent =
+          `${cropSource.width}x${cropSource.height} to ${width}x${height}`;
+      }
+
+      SIDES.forEach((side) =>
+        cropSliders[side].addEventListener("input", drawGuides),
+      );
+
+      cropReset.addEventListener("click", () => {
+        SIDES.forEach((side) => (cropSliders[side].value = 0));
+        drawGuides();
+      });
+
+      cropApply.addEventListener("click", async () => {
+        try {
+          say("Applying crop, the stream will restart...");
+          const body = await api("/api/crop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(cropFractions()),
+          });
+          say(body.warning || "");
+          loadPreview();
+        } catch (error) {
+          say(error.message, true);
+        }
+      });
+
+      async function refreshCrop() {
+        try {
+          const state = await api("/api/crop");
+          // Only offer it for the camera actually being published, since the
+          // dropdown can be pointed at a different one
+          const relevant =
+            state.supported && state.camera === cameraSelect.value;
+          cropSection.hidden = !relevant;
+          previewWrap.classList.toggle("cropping", relevant);
+          if (!relevant) return;
+
+          cropCameraLabel.textContent = state.camera;
+          cropSource =
+            state.source_width && state.source_height
+              ? { width: state.source_width, height: state.source_height }
+              : null;
+          for (const side of SIDES) {
+            cropSliders[side].value = Math.round((state.crop[side] || 0) * 100);
+          }
+          drawGuides();
+          // The guides are meaningless without something to draw them on
+          if (preview.hidden) loadPreview();
+        } catch (error) {
+          cropSection.hidden = true;
+          previewWrap.classList.remove("cropping");
+        }
+      }
+
       // Wire a pair of on/off buttons to an endpoint that takes { camera, on }
       function wireLight(buttons, path, label, key) {
         buttons.forEach((button) => {
@@ -356,7 +532,10 @@
         });
       });
 
-      cameraSelect.addEventListener("change", refreshState);
+      cameraSelect.addEventListener("change", () => {
+        refreshState();
+        refreshCrop();
+      });
 
       (async function start() {
         try {
@@ -365,6 +544,7 @@
             ...cameras.map((name) => new Option(name, name)),
           );
           await refreshState();
+          await refreshCrop();
           // Pick up changes made elsewhere, such as the Reolink app
           setInterval(refreshState, 3000);
         } catch (error) {

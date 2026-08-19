@@ -40,6 +40,10 @@ mod battery;
 mod cmdline;
 mod common;
 mod config;
+// Shared by the Syphon publisher, which applies the crop, and the web UI, which
+// sets it. Plain arithmetic, so it builds everywhere either of them does
+#[cfg(any(feature = "ui", all(feature = "syphon", target_os = "macos")))]
+mod crop;
 mod framestats;
 #[cfg(feature = "gstreamer")]
 mod image;
@@ -171,7 +175,7 @@ async fn main() -> Result<()> {
         }
         #[cfg(all(feature = "syphon", target_os = "macos"))]
         Some(Command::Syphon(opts)) => {
-            syphon::main(opts, neo_reactor.clone()).await?;
+            syphon::main(opts, neo_reactor.clone(), &conf_path).await?;
         }
         #[cfg(feature = "ui")]
         Some(Command::Ui(opts)) => {
